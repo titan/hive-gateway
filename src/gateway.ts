@@ -25,6 +25,7 @@ let log = bunyan.createLogger({
 });
 
 let routes = {}; // {mod: {docker-id: addr}}
+let counters = {}; // {mod: integer}
 
 var dockerOpts = null;
 
@@ -55,15 +56,21 @@ monitor({
         if (err) {
           log.error(err, 'Error getting container details for: %j', containerInfo);
         } else {
+          let mod = containerInfo.Labels.api_module;
           try {
             // prepare and register a new route
-            let route = {
-              mod: containerInfo.Labels.api_module,
-              addr: getUpstreamAddress(containerDetails)
-            };
+            let addr = getUpstreamAddress(containerDetails);
 
-            routes[containerInfo.Id] = route;
-            log.info('Registered new api route: %j', route);
+            if (routes[mod]) {
+              routes[mod][containerInfo.Id] = addr;
+            } else {
+              let route = {}
+              route[containerInfo.Id] = addr;
+              routes[mod] = route;
+              counters[mod] = 0;
+            }
+
+            log.info('Registered new api route: %s => %s', mod, addr);
           } catch (e) {
             log.error(e, 'Error creating new api route for: %j', containerDetails);
           }
@@ -75,10 +82,14 @@ monitor({
   onContainerDown: function (container, docker) {
     if (container.Labels && container.Labels.api_module) {
       // remove existing route when container goes down
-      var route = routes[container.Id];
+      let mod = container.Labels.api_module;
+      let route = routes[mod];
       if (route) {
-        delete routes[container.Id];
-        log.info('Removed api route: %j', route);
+        let addr = route[container.Id];
+        if (addr) {
+          delete route[container.Id];
+          log.info('Removed api route: %s => %s', mod, addr);
+        }
       }
     }
   },
@@ -110,30 +121,28 @@ let server = http.createServer((req, rep) => {
       const mod = data.mod;
       const fun = data.fun;
       const arg = data.arg;
-      let found = false;
 
-      for (let id in routes) {
-        if (routes.hasOwnProperty(id) && routes[id].mod === mod) {
-          found = true;
-          let params = {
-            ctx: { domain: 'mobile', ip: req.connection.remoteAddress, uid: ''},
-            fun: fun,
-            args: arg
-          };
-          log.info({params: params}, 'call %s.%s %s', mod, fun, JSON.stringify(arg));
-          let request = nanomsg.socket('req');
-          let addr = routes[id].addr;
-          request.connect(addr);
-          request.send(msgpack.encode(params));
-          request.on('data', (msg) => {
-            rep.writeHead(200, {'Content-Type': 'application/octet-stream'});
-            rep.write(msg);
-            rep.end();
-            request.close();
-          });
-        }
-      }
-      if (!found) {
+      let route = routes[mod];
+
+      if (route) {
+        let params = {
+          ctx: { domain: 'mobile', ip: req.headers['x-forwarded-for'] || req.socket.remoteAddress, uid: ''},
+          fun: fun,
+          args: arg
+        };
+        let idx = (counters[mod] ++) % Object.keys(route).length;
+        let addr = route[Object.keys(route)[idx]];
+        log.info({params: params}, 'call %s.%s %s to %s', mod, fun, JSON.stringify(arg), addr);
+        let request = nanomsg.socket('req');
+        request.connect(addr);
+        request.send(msgpack.encode(params));
+        request.on('data', (msg) => {
+          rep.writeHead(200, {'Content-Type': 'application/octet-stream'});
+          rep.write(msg);
+          rep.end();
+          request.close();
+        });
+      } else {
         log.info('%s.%s %s not found', mod, fun, JSON.stringify(arg));
         rep.writeHead(404, {'Content-Type': 'text/plain'});
         rep.end('Module not found');
