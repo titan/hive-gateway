@@ -2,12 +2,12 @@
   "name": "gateway",
   "version": "1.0.0",
   "description": "",
-  "scripts": {
-  },
+  "scripts": {},
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "bunyan": "^1.8.1",
     "msgpack-lite": "^0.1.20",
     "nanomsg": "^3.2.2",
     "node-docker-monitor": "^1.0.10"

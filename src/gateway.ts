@@ -2,15 +2,29 @@ import * as monitor from 'node-docker-monitor';
 import * as http from 'http';
 import * as msgpack from 'msgpack-lite';
 import * as nanomsg from 'nanomsg';
-import * as util from 'util';
+import * as bunyan from 'bunyan';
 
-let debuglog = util.debuglog('gateway');
-let debug = (format: string, ...rest: any[]) => {
-  let date = new Date();
-  debuglog(date.toISOString() + " " + format, ...rest);
-}
+let log = bunyan.createLogger({
+  name: 'gateway',
+  streams: [
+    {
+      level: 'info',
+      path: '/var/log/gateway-info.log',  // log ERROR and above to a file
+      type: 'rotating-file',
+      period: '1d',   // daily rotation
+      count: 7        // keep 7 back copies
+    },
+    {
+      level: 'error',
+      path: '/var/log/gateway-error.log',  // log ERROR and above to a file
+      type: 'rotating-file',
+      period: '1w',   // daily rotation
+      count: 3        // keep 7 back copies
+    }
+  ]
+});
 
-let routes = {}; // {mod: addr}
+let routes = {}; // {mod: {docker-id: addr}}
 
 var dockerOpts = null;
 
@@ -39,7 +53,7 @@ monitor({
       // get running container details
       container.inspect(null, (err, containerDetails) => {
         if (err) {
-          debuglog('Error getting container details for: %j', containerInfo, err);
+          log.error(err, 'Error getting container details for: %j', containerInfo);
         } else {
           try {
             // prepare and register a new route
@@ -49,9 +63,9 @@ monitor({
             };
 
             routes[containerInfo.Id] = route;
-            debuglog('Registered new api route: %j', route);
+            log.info('Registered new api route: %j', route);
           } catch (e) {
-            debuglog('Error creating new api route for: %j', containerDetails, e);
+            log.error(e, 'Error creating new api route for: %j', containerDetails);
           }
         }
       });
@@ -64,7 +78,7 @@ monitor({
       var route = routes[container.Id];
       if (route) {
         delete routes[container.Id];
-        debuglog('Removed api route: %j', route);
+        log.info('Removed api route: %j', route);
       }
     }
   },
@@ -106,7 +120,7 @@ let server = http.createServer((req, rep) => {
             fun: fun,
             args: arg
           };
-          debug('%s', JSON.stringify(params));
+          log.info({params: params}, 'call %s.%s %s', mod, fun, JSON.stringify(arg));
           let request = nanomsg.socket('req');
           let addr = routes[id].addr;
           request.connect(addr);
@@ -120,13 +134,15 @@ let server = http.createServer((req, rep) => {
         }
       }
       if (!found) {
-        debug('%s.%s %s not found', mod, fun, JSON.stringify(arg));
+        log.info('%s.%s %s not found', mod, fun, JSON.stringify(arg));
+        rep.writeHead(404, {'Content-Type': 'text/plain'});
+        rep.end('Module not found');
       }
     });
   } else {
-    debug('%s %s', req.method, req.url);
+    log.info('%s %s invalid rpc call', req.method, req.url);
     rep.writeHead(405, {'Content-Type': 'text/plain'});
-    rep.end();
+    rep.end('Invalid rpc call');
   }
 });
 
@@ -149,5 +165,5 @@ function getUpstreamAddress(containerDetails) {
   return null;
 }
 
-debug('API gateway is listening on port: 8000');
+log.info('API gateway is listening on port: 8000');
 server.listen(8000);

@@ -7,4 +7,4 @@ ADD dist/gateway.js .
 ADD node_modules ./node_modules
 
 EXPOSE 8000
-CMD [ "node" "/code/gateway.js" ]
+CMD [ "node", "/code/gateway.js" ]
