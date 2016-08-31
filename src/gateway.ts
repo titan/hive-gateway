@@ -3,6 +3,7 @@ import * as http from 'http';
 import * as msgpack from 'msgpack-lite';
 import * as nanomsg from 'nanomsg';
 import * as bunyan from 'bunyan';
+import * as Redis from 'redis';
 
 let log = bunyan.createLogger({
   name: 'gateway',
@@ -26,6 +27,8 @@ let log = bunyan.createLogger({
 
 let routes = {}; // {mod: {docker-id: addr}}
 let counters = {}; // {mod: integer}
+
+let redis = Redis.createClient(6379, process.env['CACHE_HOST']);
 
 var dockerOpts = null;
 
@@ -111,6 +114,15 @@ let server = http.createServer((req, rep) => {
   rep.setHeader('Access-Control-Allow-Credentials', 'true');
   rep.setHeader('Access-Control-Allow-Methods', 'POST');
 
+  let cookies = parseCookies(req);
+  let openid = null;
+  for (let cookie in cookies) {
+    if (cookie && cookie === 'wxuser') {
+      openid = cookies[cookie];
+      log.info("got cookie wxuser = %s", openid);
+    }
+  }
+
   if (req.method == 'POST') {
     let chunks = [];
     req.on('data', (chunk) => {
@@ -125,23 +137,27 @@ let server = http.createServer((req, rep) => {
       let route = routes[mod];
 
       if (route) {
-        let params = {
-          ctx: { domain: 'mobile', ip: req.headers['x-forwarded-for'] || req.socket.remoteAddress, uid: ''},
-          fun: fun,
-          args: arg
-        };
-        let idx = (counters[mod] ++) % Object.keys(route).length;
-        let addr = route[Object.keys(route)[idx]];
-        log.info({params: params}, 'call %s.%s %s to %s', mod, fun, JSON.stringify(arg), addr);
-        let request = nanomsg.socket('req');
-        request.connect(addr);
-        request.send(msgpack.encode(params));
-        request.on('data', (msg) => {
-          rep.writeHead(200, {'Content-Type': 'application/octet-stream'});
-          rep.write(msg);
-          rep.end();
-          request.close();
-        });
+        let uid = '';
+        if (openid) {
+          redis.hget('wxuser', openid, (err, reply) => {
+            if (!err) {
+              uid = reply;
+            }
+            let params = {
+              ctx: { domain: 'mobile', ip: req.headers['x-forwarded-for'] || req.socket.remoteAddress, uid: uid },
+              fun: fun,
+              args: arg
+            };
+            call(route, params, rep);
+          });
+        } else {
+          let params = {
+            ctx: { domain: 'mobile', ip: req.headers['x-forwarded-for'] || req.socket.remoteAddress, uid: uid },
+            fun: fun,
+            args: arg
+          };
+          call(route, params, rep);
+        }
       } else {
         log.info('%s.%s %s not found', mod, fun, JSON.stringify(arg));
         rep.writeHead(404, {'Content-Type': 'text/plain'});
@@ -172,6 +188,33 @@ function getUpstreamAddress(containerDetails) {
     }
   }
   return null;
+}
+
+function parseCookies (request) {
+    let list = {};
+    let rc = request.headers.cookie;
+
+    rc && rc.split(';').forEach(function(cookie) {
+        var parts = cookie.split('=');
+        list[parts.shift().trim()] = decodeURI(parts.join('='));
+    });
+
+    return list;
+}
+
+function call (route, params, rep) {
+  let idx = (counters[params.mod] ++) % Object.keys(route).length;
+  let addr = route[Object.keys(route)[idx]];
+  log.info({params: params}, 'call %s.%s %s to %s', params.mod, params.fun, JSON.stringify(params.arg), addr);
+  let request = nanomsg.socket('req');
+  request.connect(addr);
+  request.send(msgpack.encode(params));
+  request.on('data', (msg) => {
+    rep.writeHead(200, {'Content-Type': 'application/octet-stream'});
+    rep.write(msg);
+    rep.end();
+    request.close();
+  });
 }
 
 log.info('API gateway is listening on port: 8000');
