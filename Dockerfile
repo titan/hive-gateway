@@ -1,4 +1,4 @@
-FROM mhart/alpine-node:latest
+FROM hive/node-base:6.3.1
 
 WORKDIR /code
 

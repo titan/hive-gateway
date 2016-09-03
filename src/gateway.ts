@@ -64,16 +64,20 @@ monitor({
             // prepare and register a new route
             let addr = getUpstreamAddress(containerDetails);
 
-            if (routes[mod]) {
-              routes[mod][containerInfo.Id] = addr;
-            } else {
-              let route = {}
-              route[containerInfo.Id] = addr;
-              routes[mod] = route;
-              counters[mod] = 0;
-            }
+            if (addr) {
+              if (routes[mod]) {
+                routes[mod][containerInfo.Id] = addr;
+              } else {
+                let route = {}
+                route[containerInfo.Id] = addr;
+                routes[mod] = route;
+                counters[mod] = 0;
+              }
 
-            log.info('Registered new api route: %s => %s', mod, addr);
+              log.info('Registered new api route: %s => %s', mod, addr);
+            } else {
+              log.error('Cannot register api route to mod %s with null address', mod);
+            }
           } catch (e) {
             log.error(e, 'Error creating new api route for: %j', containerDetails);
           }
@@ -114,15 +118,6 @@ let server = http.createServer((req, rep) => {
   rep.setHeader('Access-Control-Allow-Credentials', 'true');
   rep.setHeader('Access-Control-Allow-Methods', 'POST');
 
-  let cookies = parseCookies(req);
-  let openid = null;
-  for (let cookie in cookies) {
-    if (cookie && cookie === 'wxuser') {
-      openid = cookies[cookie];
-      log.info("got cookie wxuser = %s", openid);
-    }
-  }
-
   if (req.method == 'POST') {
     let chunks = [];
     req.on('data', (chunk) => {
@@ -133,6 +128,9 @@ let server = http.createServer((req, rep) => {
       const mod = data.mod;
       const fun = data.fun;
       const arg = data.arg;
+      const ctx = data.ctx;
+
+      let openid = ctx? ctx.wxuser: null;
 
       let route = routes[mod];
 
@@ -148,7 +146,7 @@ let server = http.createServer((req, rep) => {
               fun: fun,
               args: arg
             };
-            call(route, params, rep);
+            call(route, mod, params, rep);
           });
         } else {
           let params = {
@@ -156,7 +154,7 @@ let server = http.createServer((req, rep) => {
             fun: fun,
             args: arg
           };
-          call(route, params, rep);
+          call(route, mod, params, rep);
         }
       } else {
         log.info('%s.%s %s not found', mod, fun, JSON.stringify(arg));
@@ -190,22 +188,10 @@ function getUpstreamAddress(containerDetails) {
   return null;
 }
 
-function parseCookies (request) {
-    let list = {};
-    let rc = request.headers.cookie;
-
-    rc && rc.split(';').forEach(function(cookie) {
-        var parts = cookie.split('=');
-        list[parts.shift().trim()] = decodeURI(parts.join('='));
-    });
-
-    return list;
-}
-
-function call (route, params, rep) {
-  let idx = (counters[params.mod] ++) % Object.keys(route).length;
+function call (route, mod, params, rep) {
+  let idx = (counters[mod] ++) % Object.keys(route).length;
   let addr = route[Object.keys(route)[idx]];
-  log.info({params: params}, 'call %s.%s %s to %s', params.mod, params.fun, JSON.stringify(params.arg), addr);
+  log.info({params: params}, 'call %s.%s %s to %s', mod, params.fun, JSON.stringify(params.arg), addr);
   let request = nanomsg.socket('req');
   request.connect(addr);
   request.send(msgpack.encode(params));
