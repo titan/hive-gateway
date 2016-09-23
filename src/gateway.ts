@@ -3,7 +3,7 @@ import * as msgpack from 'msgpack-lite';
 import * as nanomsg from 'nanomsg';
 import * as bunyan from 'bunyan';
 import * as Redis from 'redis';
-import * as hostmap from './hostmap';
+import { servermap } from 'hive-hostmap';
 
 let log = bunyan.createLogger({
   name: 'gateway',
@@ -25,7 +25,7 @@ let log = bunyan.createLogger({
   ]
 });
 
-let routes = hostmap.default;
+let routes = servermap;
 
 let redis = Redis.createClient(6379, process.env['CACHE_HOST']);
 

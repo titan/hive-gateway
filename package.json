@@ -1,6 +1,6 @@
 {
   "name": "gateway",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "",
   "scripts": {},
   "keywords": [],
@@ -10,7 +10,7 @@
     "bunyan": "^1.8.1",
     "msgpack-lite": "^0.1.20",
     "nanomsg": "^3.2.2",
-    "node-docker-monitor": "^1.0.10",
-    "redis": "^2.6.2"
+    "redis": "^2.6.2",
+    "hive-hostmap": "git+http://git.fengchaohuzhu.com:10080/Titan/hive-hostmap.git"
   }
 }
