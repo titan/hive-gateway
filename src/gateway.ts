@@ -1,4 +1,5 @@
 import * as http from "http";
+import * as crypto from "crypto";
 import * as msgpack from "msgpack-lite";
 import * as nanomsg from "nanomsg";
 import * as bunyan from "bunyan";
@@ -28,13 +29,75 @@ let log = bunyan.createLogger({
 
 const redis = Redis.createClient(process.env["CACHE_PORT"] ? parseInt(process.env["CACHE_HOST"]) : 6379, process.env["CACHE_HOST"]);
 
-const routes = ["oss"].reduce((acc, svc) => {
+const sessions = {};
+
+const routes = Object.keys(["oss"].reduce((acc, svc) => {
   const addr = process.env[svc.toUpperCase()];
   if (addr) {
     acc[svc] = addr;
   }
   return acc;
-}, servermap);
+}, servermap)).reduce((acc, mod) => {
+  const request = nanomsg.socket("req", { sndtimeo: 5000, rcvtimeo: 30000 });
+  const addr = servermap[mod];
+  if (addr) {
+    request.connect(addr);
+    request.on("data", (msg) => {
+      const data: Object = msgpack.decode(msg);
+      const pair = sessions[data["sn"]];
+      if (pair && pair["rep"]) {
+        const rep = pair["rep"];
+        const encoding: string = pair["encoding"];
+        const payload: Buffer = data["payload"];
+        if (payload.length > 1024) {
+          if (encoding.match(/\bdeflate\b/)) {
+            zlib.deflate(payload, (err: Error, buf: Buffer) => {
+              if (err) {
+                rep.writeHead(200, { "Content-Type": "application/octet-stream"});
+                rep.write(payload);
+                rep.end();
+                delete sessions[data["sn"]];
+              } else {
+                rep.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Encoding": "deflate" });
+                rep.write(buf);
+                rep.end();
+                delete sessions[data["sn"]];
+              }
+            });
+          } else if (encoding.match(/\bgzip\b/)) {
+            zlib.gzip(payload, (err: Error, buf: Buffer) => {
+              if (err) {
+                rep.writeHead(200, { "Content-Type": "application/octet-stream"});
+                rep.write(payload);
+                rep.end();
+                delete sessions[data["sn"]];
+              } else {
+                rep.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Encoding": "gzip" });
+                rep.write(buf);
+                rep.end();
+                delete sessions[data["sn"]];
+              }
+            });
+          } else {
+            rep.writeHead(200, {"Content-Type": "application/octet-stream"});
+            rep.write(payload);
+            rep.end();
+            delete sessions[data["sn"]];
+          }
+        } else {
+          rep.writeHead(200, {"Content-Type": "application/octet-stream"});
+          rep.write(payload);
+          rep.end();
+          delete sessions[data["sn"]];
+        }
+      } else {
+        console.error(`Response ${data["sn"]} not found`);
+      }
+    });
+    acc[mod] = request;
+  }
+  return acc;
+}, {});
 
 // create and start http server
 let server = http.createServer((req, rep) => {
@@ -99,54 +162,16 @@ let server = http.createServer((req, rep) => {
   }
 });
 
-function call (acceptEncoding, addr, mod, params, rep) {
-  log.info({params: params}, "call %s.%s %s to %s", mod, params.fun, JSON.stringify(params.args), addr);
-  let request = nanomsg.socket("req");
-  request.connect(addr);
-  request.send(msgpack.encode(params));
-  request.on("data", (msg) => {
-    if (msg.length > 1024) {
-      if (acceptEncoding.match(/\bdeflate\b/)) {
-        zlib.deflate(msg, (err: Error, buf: Buffer) => {
-          if (err) {
-            rep.writeHead(200, { "Content-Type": "application/octet-stream"});
-            rep.write(msg);
-            rep.end();
-            request.close();
-          } else {
-            rep.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Encoding": "deflate" });
-            rep.write(buf);
-            rep.end();
-            request.close();
-          }
-        });
-      } else if (acceptEncoding.match(/\bgzip\b/)) {
-        zlib.gzip(msg, (err: Error, buf: Buffer) => {
-          if (err) {
-            rep.writeHead(200, { "Content-Type": "application/octet-stream"});
-            rep.write(msg);
-            rep.end();
-            request.close();
-          } else {
-            rep.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Encoding": "gzip" });
-            rep.write(buf);
-            rep.end();
-            request.close();
-          }
-        });
-      } else {
-        rep.writeHead(200, { "Content-Type": "application/octet-stream"});
-        rep.write(msg);
-        rep.end();
-        request.close();
-      }
-    } else {
-      rep.writeHead(200, { "Content-Type": "application/octet-stream"});
-      rep.write(msg);
-      rep.end();
-      request.close();
-    }
-  });
+function call (acceptEncoding, socket, mod, params, rep) {
+  const addr = servermap[mod];
+  const sn = crypto.randomBytes(64).toString("base64");
+  log.info("call %s.%s %s to %s", mod, params.fun, JSON.stringify(params.args), addr);
+  const data = msgpack.encode({sn, pkt: params});
+  socket.send(data);
+  sessions[sn] = {
+    encoding: acceptEncoding,
+    rep
+  };
 }
 
 log.info("API gateway is listening on port: 8000");
