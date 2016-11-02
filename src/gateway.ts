@@ -3,6 +3,7 @@ import * as msgpack from 'msgpack-lite';
 import * as nanomsg from 'nanomsg';
 import * as bunyan from 'bunyan';
 import * as Redis from 'redis';
+import * as zlib from 'zlib';
 import { servermap } from 'hive-hostmap';
 
 let log = bunyan.createLogger({
@@ -67,7 +68,8 @@ let server = http.createServer((req, rep) => {
               fun: fun,
               args: arg
             };
-            call(route, mod, params, rep);
+            const acceptEncoding = req.headers['accept-encoding'];
+            call(acceptEncoding ?  acceptEncoding : '', route, mod, params, rep);
           });
         } else {
           let params = {
@@ -75,7 +77,8 @@ let server = http.createServer((req, rep) => {
             fun: fun,
             args: arg
           };
-          call(route, mod, params, rep);
+          const acceptEncoding = req.headers['accept-encoding'];
+          call(acceptEncoding ?  acceptEncoding : '', route, mod, params, rep);
         }
       } else {
         log.info('%s.%s %s not found', mod, fun, JSON.stringify(arg));
@@ -90,17 +93,54 @@ let server = http.createServer((req, rep) => {
   }
 });
 
-function call (route, mod, params, rep) {
+function call (acceptEncoding, route, mod, params, rep) {
   let addr = route
   log.info({params: params}, 'call %s.%s %s to %s', mod, params.fun, JSON.stringify(params.args), addr);
   let request = nanomsg.socket('req');
   request.connect(addr);
   request.send(msgpack.encode(params));
   request.on('data', (msg) => {
-    rep.writeHead(200, {'Content-Type': 'application/octet-stream'});
-    rep.write(msg);
-    rep.end();
-    request.close();
+    if (msg.length > 1024) {
+      if (acceptEncoding.match(/\bdeflate\b/)) {
+        zlib.deflate(msg, (err: Error, buf: Buffer) => {
+          if (err) {
+            rep.writeHead(200, { 'Content-Type': 'application/octet-stream'});
+            rep.write(msg);
+            rep.end();
+            request.close();
+          } else {
+            rep.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Encoding': 'deflate' });
+            rep.write(buf);
+            rep.end();
+            request.close();
+          }
+        });
+      } else if (acceptEncoding.match(/\bgzip\b/)) {
+        zlib.gzip(msg, (err: Error, buf: Buffer) => {
+          if (err) {
+            rep.writeHead(200, { 'Content-Type': 'application/octet-stream'});
+            rep.write(msg);
+            rep.end();
+            request.close();
+          } else {
+            rep.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Encoding': 'gzip' });
+            rep.write(buf);
+            rep.end();
+            request.close();
+          }
+        });
+      } else {
+        rep.writeHead(200, { 'Content-Type': 'application/octet-stream'});
+        rep.write(msg);
+        rep.end();
+        request.close();
+      }
+    } else {
+      rep.writeHead(200, { 'Content-Type': 'application/octet-stream'});
+      rep.write(msg);
+      rep.end();
+      request.close();
+    }
   });
 }
 
