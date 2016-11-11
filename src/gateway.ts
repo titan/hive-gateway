@@ -26,9 +26,15 @@ let log = bunyan.createLogger({
   ]
 });
 
-let routes = servermap;
+const redis = Redis.createClient(process.env["CACHE_PORT"] ? parseInt(process.env["CACHE_HOST"]) : 6379, process.env["CACHE_HOST"]);
 
-let redis = Redis.createClient(6379, process.env["CACHE_HOST"]);
+const routes = ["oss"].reduce((acc, svc) => {
+  const addr = process.env[svc.toUpperCase()];
+  if (addr) {
+    acc[svc] = addr;
+  }
+  return acc;
+}, servermap);
 
 // create and start http server
 let server = http.createServer((req, rep) => {
