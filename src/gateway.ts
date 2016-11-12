@@ -38,7 +38,7 @@ const routes = Object.keys(["oss"].reduce((acc, svc) => {
   }
   return acc;
 }, servermap)).reduce((acc, mod) => {
-  const request = nanomsg.socket("req", { sndtimeo: 5000, rcvtimeo: 30000 });
+  const request = nanomsg.socket("pair", { sndtimeo: 5000, rcvtimeo: 30000 });
   const addr = servermap[mod];
   if (addr) {
     request.connect(addr);
