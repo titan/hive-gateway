@@ -38,10 +38,12 @@ const routes = Object.keys(["oss"].reduce((acc, svc) => {
   }
   return acc;
 }, servermap)).reduce((acc, mod) => {
-  const request = nanomsg.socket("pair", { sndtimeo: 5000, rcvtimeo: 30000 });
   const addr = servermap[mod];
   if (addr) {
-    request.connect(addr);
+    const request = nanomsg.socket("pair", { sndtimeo: 5000, rcvtimeo: 30000 });
+    const lastnumber = parseInt(addr[addr.length - 1]) + 1;
+    const newaddr = addr.substr(0, addr.length - 1) + lastnumber.toString();
+    request.connect(newaddr);
     request.on("data", (msg) => {
       const data: Object = msgpack.decode(msg);
       const pair = sessions[data["sn"]];
