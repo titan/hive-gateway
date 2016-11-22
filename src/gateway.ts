@@ -101,6 +101,40 @@ const routes = Object.keys(["oss"].reduce((acc, svc) => {
   return acc;
 }, {});
 
+function limit_api_call(token: String, cb: ((result: boolean) => void)): void {
+  const key = "ratelimit:" + token;
+  redis.llen(key, (e: Error, current: number) => {
+    if (e) {
+      cb(false);
+    } else if (current < 10) {
+      redis.exists(key, (e: Error, exists: boolean) => {
+        if (exists) {
+          const multi = redis.multi();
+          multi.rpush(key, token);
+          multi.expire(key, 1);
+          multi.exec((e: Error, _: any) => {
+            if (e) {
+              cb(false);
+            } else {
+              cb(true);
+            }
+          });
+        } else {
+          redis.rpushx(key, token, (e: Error, _: any) => {
+            if (e) {
+              cb(false);
+            } else {
+              cb(true);
+            }
+          });
+        }
+      });
+    } else {
+      cb(false);
+    }
+  });
+}
+
 // create and start http server
 let server = http.createServer((req, rep) => {
   if (req.headers.origin) {
@@ -123,33 +157,49 @@ let server = http.createServer((req, rep) => {
       const arg = data.arg;
       const ctx = data.ctx;
 
-      let token = ctx ? ctx.wxuser : null;
+      const token = ctx ? ctx.wxuser : null;
 
-      let route = routes[mod];
+      const route = routes[mod];
 
       if (route) {
         let uid = "";
         if (token) {
-          redis.get("sessions:" + token, (err, reply) => {
-            if (!err) {
-              uid = reply;
+          limit_api_call(token, (allow: boolean) => {
+            if (allow) {
+              redis.get("sessions:" + token, (err, reply) => {
+                if (!err) {
+                  uid = reply;
+                }
+                const params = {
+                  ctx: { domain: "mobile", ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
+                  fun: fun,
+                  args: arg
+                };
+                const acceptEncoding = req.headers["accept-encoding"];
+                call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
+              });
+            } else {
+              log.info("token %s too many requests", token);
+              rep.writeHead(429, {"Content-Type": "text/plain"});
+              rep.end("Too Many Requests");
             }
-            let params = {
-              ctx: { domain: "mobile", ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
-              fun: fun,
-              args: arg
-            };
-            const acceptEncoding = req.headers["accept-encoding"];
-            call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
           });
         } else {
-          let params = {
-            ctx: { domain: "mobile", ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
-            fun: fun,
-            args: arg
-          };
-          const acceptEncoding = req.headers["accept-encoding"];
-          call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
+          limit_api_call("anonymous", (allow: boolean) => {
+            if (allow) {
+              const params = {
+                ctx: { domain: "mobile", ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
+                fun: fun,
+                args: arg
+              };
+              const acceptEncoding = req.headers["accept-encoding"];
+              call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
+            } else {
+              log.info("anonymous too many requests");
+              rep.writeHead(429, {"Content-Type": "text/plain"});
+              rep.end("Too Many Requests");
+            }
+          });
         }
       } else {
         log.info("%s.%s %s not found", mod, fun, JSON.stringify(arg));
