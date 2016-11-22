@@ -123,14 +123,14 @@ let server = http.createServer((req, rep) => {
       const arg = data.arg;
       const ctx = data.ctx;
 
-      let openid = ctx ? ctx.wxuser : null;
+      let token = ctx ? ctx.wxuser : null;
 
       let route = routes[mod];
 
       if (route) {
         let uid = "";
-        if (openid) {
-          redis.hget("wxuser", openid, (err, reply) => {
+        if (token) {
+          redis.get("sessions:" + token, (err, reply) => {
             if (!err) {
               uid = reply;
             }
@@ -140,7 +140,7 @@ let server = http.createServer((req, rep) => {
               args: arg
             };
             const acceptEncoding = req.headers["accept-encoding"];
-            call(acceptEncoding ?  acceptEncoding : "", route, mod, params, rep);
+            call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
           });
         } else {
           let params = {
@@ -149,7 +149,7 @@ let server = http.createServer((req, rep) => {
             args: arg
           };
           const acceptEncoding = req.headers["accept-encoding"];
-          call(acceptEncoding ?  acceptEncoding : "", route, mod, params, rep);
+          call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
         }
       } else {
         log.info("%s.%s %s not found", mod, fun, JSON.stringify(arg));
