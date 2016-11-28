@@ -166,18 +166,37 @@ let server = http.createServer((req, rep) => {
         if (token) {
           limit_api_call(token, (allow: boolean) => {
             if (allow) {
-              redis.get("sessions:" + token, (err, reply) => {
-                if (!err) {
-                  uid = reply;
-                }
-                const params = {
-                  ctx: { domain: "mobile", ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
-                  fun: fun,
-                  args: arg
-                };
-                const acceptEncoding = req.headers["accept-encoding"];
-                call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
-              });
+              if (token.length === 28) {
+                redis.hget("wxuser", token, (err, reply) => {
+                  if (!err) {
+                    uid = reply;
+                  } else {
+                    log.error(err);
+                  }
+                  const params = {
+                    ctx: { domain: "mobile", ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
+                    fun: fun,
+                    args: arg
+                  };
+                  const acceptEncoding = req.headers["accept-encoding"];
+                  call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
+                });
+              } else {
+                redis.get("sessions:" + token, (err, reply) => {
+                  if (!err) {
+                    uid = reply;
+                  } else {
+                    log.error(err);
+                  }
+                  const params = {
+                    ctx: { domain: "mobile", ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
+                    fun: fun,
+                    args: arg
+                  };
+                  const acceptEncoding = req.headers["accept-encoding"];
+                  call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
+                });
+              }
             } else {
               log.info("token %s too many requests", token);
               rep.writeHead(429, {"Content-Type": "text/plain"});
