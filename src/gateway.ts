@@ -46,11 +46,15 @@ const routes = Object.keys(["oss"].reduce((acc, svc) => {
     request.connect(newaddr);
     request.on("data", (msg) => {
       const data: Object = msgpack.decode(msg);
-      const pair = sessions[data["sn"]];
-      if (pair && pair["rep"]) {
-        const rep = pair["rep"];
-        const encoding: string = pair["encoding"];
+      const session = sessions[data["sn"]];
+      if (session && session["rep"]) {
+        const rep = session["rep"];
+        const encoding: string = session["encoding"];
+        const start: number = session["start"];
+        const stop: number = new Date().getTime();
+        const info: string = session["info"];
         const payload: Buffer = data["payload"];
+        log.info(`${info} done in ${stop - start} milliseconds`);
         if (payload.length > 1024) {
           if (encoding.match(/\bdeflate\b/)) {
             zlib.deflate(payload, (err: Error, buf: Buffer) => {
@@ -233,15 +237,19 @@ let server = http.createServer((req, rep) => {
   }
 });
 
-function call (acceptEncoding, socket, mod, params, rep) {
+function call (acceptEncoding: string, socket, mod: string, params, rep) {
   const addr = servermap[mod];
   const sn = crypto.randomBytes(64).toString("base64");
-  log.info("call %s.%s %s to %s", mod, params.fun, JSON.stringify(params.args), addr);
+  const paramstr = JSON.stringify(params.args);
+  const info = `call ${mod}.${params.fun} ${paramstr} to ${addr} with ${sn}`;
+  log.info(info);
   const data = msgpack.encode({sn, pkt: params});
   socket.send(data);
   sessions[sn] = {
     encoding: acceptEncoding,
-    rep
+    rep,
+    start: new Date().getTime(),
+    info
   };
 }
 
