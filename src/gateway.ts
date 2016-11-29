@@ -7,25 +7,29 @@ import * as Redis from "redis";
 import * as zlib from "zlib";
 import { servermap } from "hive-hostmap";
 
+const domain = process.argv.filter(x => x === "admin").length > 0 ? "admin" : "mobile";
+
 let log = bunyan.createLogger({
   name: "gateway",
   streams: [
     {
       level: "info",
-      path: "/var/log/gateway-info.log",  // log ERROR and above to a file
+      path: `/var/log/gateway-${domain}-info.log`,
       type: "rotating-file",
       period: "1d",   // daily rotation
       count: 7        // keep 7 back copies
     },
     {
       level: "error",
-      path: "/var/log/gateway-error.log",  // log ERROR and above to a file
+      path: `/var/log/gateway-${domain}-error.log`,
       type: "rotating-file",
       period: "1w",   // daily rotation
       count: 3        // keep 7 back copies
     }
   ]
 });
+
+const authorize_url = process.env["AUTHORIZE-URL"];
 
 const redis = Redis.createClient(process.env["CACHE_PORT"] ? parseInt(process.env["CACHE_HOST"]) : 6379, process.env["CACHE_HOST"]);
 
@@ -40,70 +44,94 @@ const routes = Object.keys(["oss"].reduce((acc, svc) => {
 }, servermap)).reduce((acc, mod) => {
   const addr = servermap[mod];
   if (addr) {
-    const request = nanomsg.socket("pair", { sndtimeo: 5000, rcvtimeo: 30000 });
-    const lastnumber = parseInt(addr[addr.length - 1]) + 1;
-    const newaddr = addr.substr(0, addr.length - 1) + lastnumber.toString();
-    request.connect(newaddr);
-    request.on("data", (msg) => {
-      const data: Object = msgpack.decode(msg);
-      const session = sessions[data["sn"]];
-      if (session && session["rep"]) {
-        const rep = session["rep"];
-        const encoding: string = session["encoding"];
-        const start: number = session["start"];
-        const stop: number = new Date().getTime();
-        const info: string = session["info"];
-        const payload: Buffer = data["payload"];
-        log.info(`${info} done in ${stop - start} milliseconds`);
-        if (payload.length > 1024) {
-          if (encoding.match(/\bdeflate\b/)) {
-            zlib.deflate(payload, (err: Error, buf: Buffer) => {
-              if (err) {
-                rep.writeHead(200, { "Content-Type": "application/octet-stream"});
-                rep.write(payload);
-                rep.end();
-                delete sessions[data["sn"]];
-              } else {
-                rep.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Encoding": "deflate" });
-                rep.write(buf);
-                rep.end();
-                delete sessions[data["sn"]];
-              }
-            });
-          } else if (encoding.match(/\bgzip\b/)) {
-            zlib.gzip(payload, (err: Error, buf: Buffer) => {
-              if (err) {
-                rep.writeHead(200, { "Content-Type": "application/octet-stream"});
-                rep.write(payload);
-                rep.end();
-                delete sessions[data["sn"]];
-              } else {
-                rep.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Encoding": "gzip" });
-                rep.write(buf);
-                rep.end();
-                delete sessions[data["sn"]];
-              }
-            });
-          } else {
-            rep.writeHead(200, {"Content-Type": "application/octet-stream"});
-            rep.write(payload);
-            rep.end();
-            delete sessions[data["sn"]];
-          }
-        } else {
-          rep.writeHead(200, {"Content-Type": "application/octet-stream"});
-          rep.write(payload);
-          rep.end();
-          delete sessions[data["sn"]];
-        }
-      } else {
-        console.error(`Response ${data["sn"]} not found`);
-      }
-    });
-    acc[mod] = request;
+    if (domain === "mobile") {
+      const request = nanomsg.socket("pair", { sndtimeo: 5000, rcvtimeo: 30000 });
+      const lastnumber = parseInt(addr[addr.length - 1]) + 1;
+      const newaddr = addr.substr(0, addr.length - 1) + lastnumber.toString();
+      request.connect(domain === "mobile" ? newaddr : addr);
+      request.on("data", on_service_response);
+      acc[mod] = request;
+    } else {
+      acc[mod] = addr;
+    }
   }
   return acc;
 }, {});
+
+function on_service_response(msg) {
+  const data: Object = msgpack.decode(msg);
+  const session = sessions[data["sn"]];
+  if (session && session["rep"]) {
+    const rep = session["rep"];
+    const encoding: string = session["encoding"];
+    const start: number = session["start"];
+    const stop: number = new Date().getTime();
+    const info: string = session["info"];
+    const payload: Buffer = data["payload"];
+    log.info(`${info} done in ${stop - start} milliseconds`);
+    if (payload.length > 1024) {
+      if (encoding.match(/\bdeflate\b/)) {
+        zlib.deflate(payload, (err: Error, buf: Buffer) => {
+          if (err) {
+            rep.writeHead(200, { "Content-Type": "application/octet-stream"});
+            rep.write(payload);
+            rep.end();
+            if (sessions[data["sn"]]["req"]) {
+              sessions[data["sn"]]["req"].close();
+            }
+            delete sessions[data["sn"]];
+          } else {
+            rep.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Encoding": "deflate" });
+            rep.write(buf);
+            rep.end();
+            if (sessions[data["sn"]]["req"]) {
+              sessions[data["sn"]]["req"].close();
+            }
+            delete sessions[data["sn"]];
+          }
+        });
+      } else if (encoding.match(/\bgzip\b/)) {
+        zlib.gzip(payload, (err: Error, buf: Buffer) => {
+          if (err) {
+            rep.writeHead(200, { "Content-Type": "application/octet-stream"});
+            rep.write(payload);
+            rep.end();
+            if (sessions[data["sn"]]["req"]) {
+              sessions[data["sn"]]["req"].close();
+            }
+            delete sessions[data["sn"]];
+          } else {
+            rep.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Encoding": "gzip" });
+            rep.write(buf);
+            rep.end();
+            if (sessions[data["sn"]]["req"]) {
+              sessions[data["sn"]]["req"].close();
+            }
+            delete sessions[data["sn"]];
+          }
+        });
+      } else {
+        rep.writeHead(200, {"Content-Type": "application/octet-stream"});
+        rep.write(payload);
+        rep.end();
+        if (sessions[data["sn"]]["req"]) {
+          sessions[data["sn"]]["req"].close();
+        }
+        delete sessions[data["sn"]];
+      }
+    } else {
+      rep.writeHead(200, {"Content-Type": "application/octet-stream"});
+      rep.write(payload);
+      rep.end();
+      if (sessions[data["sn"]]["req"]) {
+        sessions[data["sn"]]["req"].close();
+      }
+      delete sessions[data["sn"]];
+    }
+  } else {
+    console.error(`Response ${data["sn"]} not found`);
+  }
+}
 
 function limit_api_call(token: String, cb: ((result: boolean) => void)): void {
   const key = "ratelimit:" + token;
@@ -177,13 +205,19 @@ let server = http.createServer((req, rep) => {
                   } else {
                     log.error(err);
                   }
-                  const params = {
-                    ctx: { domain: "mobile", ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
-                    fun: fun,
-                    args: arg
-                  };
-                  const acceptEncoding = req.headers["accept-encoding"];
-                  call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
+                  if (uid && uid.length > 0) {
+                    const params = {
+                      ctx: { domain: domain, ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
+                      fun: fun,
+                      args: arg
+                    };
+                    const acceptEncoding = req.headers["accept-encoding"];
+                    call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
+                  } else {
+                    log.info("User is not authorized by wechat");
+                    rep.writeHead(307, {"Content-Type": "text/plain"});
+                    rep.end(authorize_url);
+                  }
                 });
               } else {
                 redis.get("sessions:" + token, (err, reply) => {
@@ -192,13 +226,19 @@ let server = http.createServer((req, rep) => {
                   } else {
                     log.error(err);
                   }
-                  const params = {
-                    ctx: { domain: "mobile", ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
-                    fun: fun,
-                    args: arg
-                  };
-                  const acceptEncoding = req.headers["accept-encoding"];
-                  call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
+                  if (uid && uid.length > 0) {
+                    const params = {
+                      ctx: { domain: domain, ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
+                      fun: fun,
+                      args: arg
+                    };
+                    const acceptEncoding = req.headers["accept-encoding"];
+                    call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
+                  } else {
+                    log.info("User is not authorized by wechat");
+                    rep.writeHead(307, {"Content-Type": "text/plain"});
+                    rep.end(authorize_url);
+                  }
                 });
               }
             } else {
@@ -208,21 +248,27 @@ let server = http.createServer((req, rep) => {
             }
           });
         } else {
-          limit_api_call("anonymous", (allow: boolean) => {
-            if (allow) {
-              const params = {
-                ctx: { domain: "mobile", ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
-                fun: fun,
-                args: arg
-              };
-              const acceptEncoding = req.headers["accept-encoding"];
-              call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
-            } else {
-              log.info("anonymous too many requests");
-              rep.writeHead(429, {"Content-Type": "text/plain"});
-              rep.end("Too Many Requests");
-            }
-          });
+          if (domain === "admin") {
+            limit_api_call("anonymous", (allow: boolean) => {
+              if (allow) {
+                const params = {
+                  ctx: { domain: domain, ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
+                  fun: fun,
+                  args: arg
+                };
+                const acceptEncoding = req.headers["accept-encoding"];
+                call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
+              } else {
+                log.info("anonymous too many requests");
+                rep.writeHead(429, {"Content-Type": "text/plain"});
+                rep.end("Too Many Requests");
+              }
+            });
+          } else {
+            log.info("User is not authorized by wechat");
+            rep.writeHead(307, {"Content-Type": "text/plain"});
+            rep.end(authorize_url);
+          }
         }
       } else {
         log.info("%s.%s %s not found", mod, fun, JSON.stringify(arg));
@@ -241,17 +287,28 @@ function call (acceptEncoding: string, socket, mod: string, params, rep) {
   const addr = servermap[mod];
   const sn = crypto.randomBytes(64).toString("base64");
   const paramstr = JSON.stringify(params.args);
-  const info = `call ${mod}.${params.fun} ${paramstr} to ${addr} with ${sn}`;
+  const info = `call ${mod}.${params.fun} ${paramstr} to ${addr} with sn ${sn}`;
   log.info(info);
   const data = msgpack.encode({sn, pkt: params});
-  socket.send(data);
   sessions[sn] = {
     encoding: acceptEncoding,
     rep,
     start: new Date().getTime(),
     info
   };
+  if (domain === "mobile") {
+    socket.send(data);
+  } else {
+    const request = nanomsg.socket("req");
+    request.connect(addr);
+    request.send(data);
+    request.on("data", on_service_response);
+    sessions[sn]["req"] = request;
+  }
 }
 
-log.info("API gateway is listening on port: 8000");
-server.listen(8000);
+const portkey = "GATEWAY-" + domain.toUpperCase() + "-PORT";
+const port = process.env[portkey] ? parseInt(process.env[portkey]) : 8000;
+
+log.info(`API gateway is listening on port: ${port}`);
+server.listen(port);
