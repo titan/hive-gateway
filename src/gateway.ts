@@ -62,7 +62,7 @@ const routes = Object.keys(servermap).reduce((acc, mod) => {
 
 function try_inflate(buf: Buffer, callback: ((err: Error, buf: Buffer) => void)): void {
   if (buf[0] === 0x78 && buf[1] === 0x9c) {
-    zlib.deflate(buf, (err: Error, newbuf: Buffer) => {
+    zlib.inflate(buf, (err: Error, newbuf: Buffer) => {
       callback(err, newbuf);
     });
   } else {
