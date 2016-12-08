@@ -58,6 +58,17 @@ const routes = Object.keys(["oss"].reduce((acc, svc) => {
   return acc;
 }, {});
 
+
+function try_inflate(buf: Buffer, callback: ((err: Error, buf: Buffer) => void)): void {
+  if (buf[0] === 0x78 && buf[1] === 0x9c) {
+    zlib.deflate(buf, (err: Error, newbuf: Buffer) => {
+      callback(err, newbuf);
+    });
+  } else {
+    callback(null, buf);
+  }
+}
+
 function on_service_response(msg) {
   const data: Object = msgpack.decode(msg);
   const session = sessions[data["sn"]];
@@ -67,49 +78,66 @@ function on_service_response(msg) {
     const start: number = session["start"];
     const stop: number = new Date().getTime();
     const info: string = session["info"];
-    const payload: Buffer = data["payload"];
-    log.info(`${info} done in ${stop - start} milliseconds`);
-    if (payload.length > 1024) {
-      if (encoding.match(/\bdeflate\b/)) {
-        zlib.deflate(payload, (err: Error, buf: Buffer) => {
-          if (err) {
-            rep.writeHead(200, { "Content-Type": "application/octet-stream"});
-            rep.write(payload);
-            rep.end();
-            if (sessions[data["sn"]]["req"]) {
-              sessions[data["sn"]]["req"].close();
+    try_inflate(data["payload"], (e: Error, payload: Buffer) => {
+      if (e) {
+        log.error(e);
+        delete sessions[data["sn"]];
+        rep.writeHead(500, {"Content-Type": "text/plain"});
+        rep.write("Inflate response error");
+        rep.end();
+        return;
+      }
+      log.info(`${info} done in ${stop - start} milliseconds`);
+      if (payload.length > 1024) {
+        if (encoding.match(/\bdeflate\b/)) {
+          zlib.deflate(payload, (err: Error, buf: Buffer) => {
+            if (err) {
+              rep.writeHead(200, { "Content-Type": "application/octet-stream"});
+              rep.write(payload);
+              rep.end();
+              if (sessions[data["sn"]]["req"]) {
+                sessions[data["sn"]]["req"].close();
+              }
+              delete sessions[data["sn"]];
+            } else {
+              rep.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Encoding": "deflate" });
+              rep.write(buf);
+              rep.end();
+              if (sessions[data["sn"]]["req"]) {
+                sessions[data["sn"]]["req"].close();
+              }
+              delete sessions[data["sn"]];
             }
-            delete sessions[data["sn"]];
-          } else {
-            rep.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Encoding": "deflate" });
-            rep.write(buf);
-            rep.end();
-            if (sessions[data["sn"]]["req"]) {
-              sessions[data["sn"]]["req"].close();
+          });
+        } else if (encoding.match(/\bgzip\b/)) {
+          zlib.gzip(payload, (err: Error, buf: Buffer) => {
+            if (err) {
+              rep.writeHead(200, { "Content-Type": "application/octet-stream"});
+              rep.write(payload);
+              rep.end();
+              if (sessions[data["sn"]]["req"]) {
+                sessions[data["sn"]]["req"].close();
+              }
+              delete sessions[data["sn"]];
+            } else {
+              rep.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Encoding": "gzip" });
+              rep.write(buf);
+              rep.end();
+              if (sessions[data["sn"]]["req"]) {
+                sessions[data["sn"]]["req"].close();
+              }
+              delete sessions[data["sn"]];
             }
-            delete sessions[data["sn"]];
+          });
+        } else {
+          rep.writeHead(200, {"Content-Type": "application/octet-stream"});
+          rep.write(payload);
+          rep.end();
+          if (sessions[data["sn"]]["req"]) {
+            sessions[data["sn"]]["req"].close();
           }
-        });
-      } else if (encoding.match(/\bgzip\b/)) {
-        zlib.gzip(payload, (err: Error, buf: Buffer) => {
-          if (err) {
-            rep.writeHead(200, { "Content-Type": "application/octet-stream"});
-            rep.write(payload);
-            rep.end();
-            if (sessions[data["sn"]]["req"]) {
-              sessions[data["sn"]]["req"].close();
-            }
-            delete sessions[data["sn"]];
-          } else {
-            rep.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Encoding": "gzip" });
-            rep.write(buf);
-            rep.end();
-            if (sessions[data["sn"]]["req"]) {
-              sessions[data["sn"]]["req"].close();
-            }
-            delete sessions[data["sn"]];
-          }
-        });
+          delete sessions[data["sn"]];
+        }
       } else {
         rep.writeHead(200, {"Content-Type": "application/octet-stream"});
         rep.write(payload);
@@ -119,15 +147,7 @@ function on_service_response(msg) {
         }
         delete sessions[data["sn"]];
       }
-    } else {
-      rep.writeHead(200, {"Content-Type": "application/octet-stream"});
-      rep.write(payload);
-      rep.end();
-      if (sessions[data["sn"]]["req"]) {
-        sessions[data["sn"]]["req"].close();
-      }
-      delete sessions[data["sn"]];
-    }
+    });
   } else {
     console.error(`Response ${data["sn"]} not found`);
   }
