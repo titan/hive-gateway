@@ -5,7 +5,6 @@ import * as nanomsg from "nanomsg";
 import * as bunyan from "bunyan";
 import * as Redis from "redis";
 import * as zlib from "zlib";
-import { servermap } from "hive-hostmap";
 
 const domain = process.argv.filter(x => x === "admin").length > 0 ? "admin" : "mobile";
 
@@ -35,13 +34,15 @@ const redis = Redis.createClient(process.env["CACHE_PORT"] ? parseInt(process.en
 
 const sessions = {};
 
-const routes = Object.keys(["oss"].reduce((acc, svc) => {
+const servermap = ["oss", "plan", "profile", "quotation", "wallet", "vehicle", "order", "mutual_aid", "group", "checkcode", "bank_payment", "operator"].reduce((acc, svc) => {
   const addr = process.env[svc.toUpperCase()];
   if (addr) {
     acc[svc] = addr;
   }
   return acc;
-}, servermap)).reduce((acc, mod) => {
+}, {});
+
+const routes = Object.keys(servermap).reduce((acc, mod) => {
   const addr = servermap[mod];
   if (addr) {
     if (domain === "mobile") {
