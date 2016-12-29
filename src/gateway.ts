@@ -34,7 +34,7 @@ const redis = Redis.createClient(process.env["CACHE_PORT"] ? parseInt(process.en
 
 const sessions = {};
 
-const servermap = ["oss", "plan", "profile", "quotation", "wallet", "vehicle", "order", "mutual_aid", "group", "checkcode", "bank_payment", "operator", "underwrite"].reduce((acc, svc) => {
+const servermap = ["oss", "plan", "profile", "quotation", "wallet", "vehicle", "order", "mutual_aid", "group", "checkcode", "bank_payment", "operator", "underwrite", "cashout"].reduce((acc, svc) => {
   const addr = process.env[svc.toUpperCase()];
   if (addr) {
     acc[svc] = addr;
