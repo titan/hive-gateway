@@ -34,30 +34,22 @@ const redis = Redis.createClient(process.env["CACHE_PORT"] ? parseInt(process.en
 
 const sessions = {};
 
-const servermap = ["oss", "plan", "profile", "quotation", "wallet", "vehicle", "order", "mutual_aid", "group", "checkcode", "bank_payment", "operator", "underwrite", "cashout"].reduce((acc, svc) => {
-  const addr = process.env[svc.toUpperCase()];
-  if (addr) {
-    acc[svc] = addr;
-  }
-  return acc;
-}, {});
+const servermap = {};
 
-const routes = Object.keys(servermap).reduce((acc, mod) => {
-  const addr = servermap[mod];
-  if (addr) {
-    if (domain === "mobile") {
-      const request = nanomsg.socket("pair", { sndtimeo: 5000, rcvtimeo: 30000 });
-      const lastnumber = parseInt(addr[addr.length - 1]) + 1;
-      const newaddr = addr.substr(0, addr.length - 1) + lastnumber.toString();
-      request.connect(domain === "mobile" ? newaddr : addr);
-      request.on("data", on_service_response);
-      acc[mod] = request;
-    } else {
-      acc[mod] = addr;
-    }
+const routes = {};
+
+function connect_module(addr: string) {
+  if (domain === "mobile") {
+    const request = nanomsg.socket("pair", { sndtimeo: 5000, rcvtimeo: 30000 });
+    const lastnumber = parseInt(addr[addr.length - 1]) + 1;
+    const newaddr = addr.substr(0, addr.length - 1) + lastnumber.toString();
+    request.connect(domain === "mobile" ? newaddr : addr);
+    request.on("data", on_service_response);
+    return request;
+  } else {
+    return addr;
   }
-  return acc;
-}, {});
+}
 
 function response_to_client(sn: string, rep: http.ServerResponse, data: Buffer, compressed?: string): void {
   rep.writeHead(200, compressed ? (compressed === "deflate" ? { "Content-Type": "application/octet-stream", "Content-Encoding": "deflate" } : { "Content-Type": "application/octet-stream", "Content-Encoding": "gzip" }) : { "Content-Type": "application/octet-stream" });
@@ -194,89 +186,103 @@ let server = http.createServer((req, rep) => {
 
       const token = ctx ? ctx.wxuser : null;
 
-      const route = routes[mod];
+      let route = routes[mod];
 
-      if (route) {
-        let uid = "";
-        if (token) {
-          limit_api_call(token, (allow: boolean) => {
-            if (allow) {
-              if (token.length === 28) {
-                redis.hget("wxuser", token, (err, reply) => {
-                  if (!err) {
-                    uid = reply;
-                  } else {
-                    log.error(err);
-                  }
-                  if (uid && uid.length > 0) {
-                    const params = {
-                      ctx: { domain: domain, ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
-                      fun: fun,
-                      args: arg
-                    };
-                    const acceptEncoding = req.headers["accept-encoding"];
-                    call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
-                  } else {
-                    log.info("User is not authorized by wechat");
-                    rep.writeHead(307, {"Content-Type": "text/plain"});
-                    rep.end(authorize_url);
-                  }
-                });
-              } else {
-                redis.get("sessions:" + token, (err, reply) => {
-                  if (!err) {
-                    uid = reply;
-                  } else {
-                    log.error(err);
-                  }
-                  if (uid && uid.length > 0) {
-                    const params = {
-                      ctx: { domain: domain, ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
-                      fun: fun,
-                      args: arg
-                    };
-                    const acceptEncoding = req.headers["accept-encoding"];
-                    call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
-                  } else {
-                    log.info("User is not authorized by wechat");
-                    rep.writeHead(307, {"Content-Type": "text/plain"});
-                    rep.end(authorize_url);
-                  }
-                });
-              }
-            } else {
-              log.info("token %s too many requests", token);
-              rep.writeHead(429, {"Content-Type": "text/plain"});
-              rep.end("Too Many Requests");
-            }
-          });
-        } else {
-          if (domain === "admin") {
-            limit_api_call("anonymous", (allow: boolean) => {
+      restart:
+        while (true) {
+
+        if (route) {
+          let uid = "";
+          if (token) {
+            limit_api_call(token, (allow: boolean) => {
               if (allow) {
-                const params = {
-                  ctx: { domain: domain, ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
-                  fun: fun,
-                  args: arg
-                };
-                const acceptEncoding = req.headers["accept-encoding"];
-                call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
+                if (token.length === 28) {
+                  redis.hget("wxuser", token, (err, reply) => {
+                    if (!err) {
+                      uid = reply;
+                    } else {
+                      log.error(err);
+                    }
+                    if (uid && uid.length > 0) {
+                      const params = {
+                        ctx: { domain: domain, ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
+                        fun: fun,
+                        args: arg
+                      };
+                      const acceptEncoding = req.headers["accept-encoding"];
+                      call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
+                    } else {
+                      log.info("User is not authorized by wechat");
+                      rep.writeHead(307, {"Content-Type": "text/plain"});
+                      rep.end(authorize_url);
+                    }
+                  });
+                } else {
+                  redis.get("sessions:" + token, (err, reply) => {
+                    if (!err) {
+                      uid = reply;
+                    } else {
+                      log.error(err);
+                    }
+                    if (uid && uid.length > 0) {
+                      const params = {
+                        ctx: { domain: domain, ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
+                        fun: fun,
+                        args: arg
+                      };
+                      const acceptEncoding = req.headers["accept-encoding"];
+                      call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
+                    } else {
+                      log.info("User is not authorized by wechat");
+                      rep.writeHead(307, {"Content-Type": "text/plain"});
+                      rep.end(authorize_url);
+                    }
+                  });
+                }
               } else {
-                log.info("anonymous too many requests");
+                log.info("token %s too many requests", token);
                 rep.writeHead(429, {"Content-Type": "text/plain"});
                 rep.end("Too Many Requests");
               }
             });
           } else {
-            log.info("User is not authorized by wechat");
-            rep.writeHead(307, {"Content-Type": "text/plain"});
-            rep.end(authorize_url);
+            if (domain === "admin") {
+              limit_api_call("anonymous", (allow: boolean) => {
+                if (allow) {
+                  const params = {
+                    ctx: { domain: domain, ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
+                    fun: fun,
+                    args: arg
+                  };
+                  const acceptEncoding = req.headers["accept-encoding"];
+                  call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
+                } else {
+                  log.info("anonymous too many requests");
+                  rep.writeHead(429, {"Content-Type": "text/plain"});
+                  rep.end("Too Many Requests");
+                }
+              });
+            } else {
+              log.info("User is not authorized by wechat");
+              rep.writeHead(307, {"Content-Type": "text/plain"});
+              rep.end(authorize_url);
+            }
+          }
+          break;
+        } else {
+          const addr = process.env[mod.toUpperCase()];
+          if (addr) {
+            servermap[mod] = addr;
+            routes[mod] = connect_module(addr);
+            route = routes[mod];
+            continue restart;
+          } else {
+            log.info("%s.%s %s not found", mod, fun, JSON.stringify(arg));
+            rep.writeHead(404, {"Content-Type": "text/plain"});
+            rep.end("Module not found");
+            break;
           }
         }
-      } else {
-        log.info("%s.%s %s not found", mod, fun, JSON.stringify(arg));
-        rep.writeHead(404, {"Content-Type": "text/plain"});
-        rep.end("Module not found");
       }
     });
   } else {
