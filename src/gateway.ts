@@ -6,6 +6,10 @@ import * as bunyan from "bunyan";
 import * as Redis from "redis";
 import * as zlib from "zlib";
 
+interface Audit {
+  uid: string;
+}
+
 const domain = process.argv.filter(x => x === "admin").length > 0 ? "admin" : "mobile";
 
 let log = bunyan.createLogger({
@@ -30,7 +34,7 @@ let log = bunyan.createLogger({
 
 const authorize_url = process.env["AUTHORIZE-URL"];
 
-const redis = Redis.createClient(process.env["CACHE_PORT"] ? parseInt(process.env["CACHE_HOST"]) : 6379, process.env["CACHE_HOST"]);
+const redis = Redis.createClient(process.env["CACHE_PORT"] ? parseInt(process.env["CACHE_PORT"]) : 6379, process.env["CACHE_HOST"]);
 
 const sessions = {};
 
@@ -38,17 +42,21 @@ const servermap = {};
 
 const routes = {};
 
-function connect_module(addr: string) {
-  if (domain === "mobile") {
-    const request = nanomsg.socket("pair", { sndtimeo: 5000, rcvtimeo: 30000 });
+function connect_address(addr: string) {
+  let dest = addr;
+  if (domain !== "mobile") {
     const lastnumber = parseInt(addr[addr.length - 1]) + 1;
     const newaddr = addr.substr(0, addr.length - 1) + lastnumber.toString();
-    request.connect(domain === "mobile" ? newaddr : addr);
-    request.on("data", on_service_response);
-    return request;
-  } else {
-    return addr;
+    dest = newaddr;
   }
+  return dest;
+}
+
+function connect_module(addr: string) {
+  const request = nanomsg.socket("pair", { sndtimeo: 5000, rcvtimeo: 30000 });
+  request.connect(addr);
+  request.on("data", on_service_response);
+  return request;
 }
 
 function response_to_client(sn: string, rep: http.ServerResponse, data: Buffer, compressed?: string): void {
@@ -183,14 +191,10 @@ let server = http.createServer((req, rep) => {
       const fun = data.fun;
       const arg = data.arg;
       const ctx = data.ctx;
-
       const token = ctx ? ctx.wxuser : null;
-
       let route = routes[mod];
-
       restart:
         while (true) {
-
         if (route) {
           let uid = "";
           if (token) {
@@ -207,7 +211,7 @@ let server = http.createServer((req, rep) => {
                       const params = {
                         ctx: { domain: domain, ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
                         fun: fun,
-                        args: arg
+                        args: arg,
                       };
                       const acceptEncoding = req.headers["accept-encoding"];
                       call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
@@ -218,26 +222,38 @@ let server = http.createServer((req, rep) => {
                     }
                   });
                 } else {
-                  redis.get("sessions:" + token, (err, reply) => {
-                    if (!err) {
-                      uid = reply;
-                    } else {
-                      log.error(err);
-                    }
-                    if (uid && uid.length > 0) {
-                      const params = {
-                        ctx: { domain: domain, ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
-                        fun: fun,
-                        args: arg
-                      };
-                      const acceptEncoding = req.headers["accept-encoding"];
-                      call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
-                    } else {
-                      log.info("User is not authorized by wechat");
-                      rep.writeHead(307, {"Content-Type": "text/plain"});
-                      rep.end(authorize_url);
-                    }
-                  });
+                  uid = token;
+                  if (uid.length === 36 && uid.charAt(8) === '-' && uid.charAt(13) === '-' && uid.charAt(18) === '-' && uid.charAt(23) === '-') {
+                    // rescue me
+                    const params = {
+                      ctx: { domain: domain, ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
+                      fun: fun,
+                      args: arg,
+                    };
+                    const acceptEncoding = req.headers["accept-encoding"];
+                    call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
+                  } else {
+                    redis.get("sessions:" + token, (err, reply) => {
+                      if (!err) {
+                        uid = reply;
+                      } else {
+                        log.error(err);
+                      }
+                      if (uid && uid.length > 0) {
+                        const params = {
+                          ctx: { domain: domain, ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
+                          fun: fun,
+                          args: arg,
+                        };
+                        const acceptEncoding = req.headers["accept-encoding"];
+                        call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
+                      } else {
+                        log.info("User is not authorized by wechat");
+                        rep.writeHead(307, {"Content-Type": "text/plain"});
+                        rep.end(authorize_url);
+                      }
+                    });
+                  }
                 }
               } else {
                 log.info("token %s too many requests", token);
@@ -252,7 +268,7 @@ let server = http.createServer((req, rep) => {
                   const params = {
                     ctx: { domain: domain, ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress, uid: uid },
                     fun: fun,
-                    args: arg
+                    args: arg,
                   };
                   const acceptEncoding = req.headers["accept-encoding"];
                   call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
@@ -272,8 +288,8 @@ let server = http.createServer((req, rep) => {
         } else {
           const addr = process.env[mod.toUpperCase()];
           if (addr) {
-            servermap[mod] = addr;
-            routes[mod] = connect_module(addr);
+            servermap[mod] = connect_address(addr);
+            routes[mod] = connect_module(connect_address(addr));
             route = routes[mod];
             continue restart;
           } else {
@@ -305,15 +321,7 @@ function call (acceptEncoding: string, socket, mod: string, params, rep) {
     start: new Date().getTime(),
     info
   };
-  if (domain === "mobile") {
-    socket.send(data);
-  } else {
-    const request = nanomsg.socket("req");
-    request.connect(addr);
-    request.send(data);
-    request.on("data", on_service_response);
-    sessions[sn]["req"] = request;
-  }
+  socket.send(data);
 }
 
 const portkey = "GATEWAY-" + domain.toUpperCase() + "-PORT";
