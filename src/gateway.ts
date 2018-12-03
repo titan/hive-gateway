@@ -216,7 +216,7 @@ let server = http.createServer((req, rep) => {
                       const acceptEncoding = req.headers["accept-encoding"];
                       call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
                     } else {
-                      log.info("User is not authorized by wechat");
+                      log.info(`${mod}.${fun} ${JSON.stringify(arg)}: User(${token}) is not authorized by wechat`);
                       rep.writeHead(307, {"Content-Type": "text/plain"});
                       rep.end(authorize_url);
                     }
@@ -248,7 +248,7 @@ let server = http.createServer((req, rep) => {
                         const acceptEncoding = req.headers["accept-encoding"];
                         call(acceptEncoding ? acceptEncoding : "", route, mod, params, rep);
                       } else {
-                        log.info("User is not authorized by wechat");
+                        log.info(`${mod}.${fun} ${JSON.stringify(arg)}: User(${token}) is not authorized by wechat`);
                         rep.writeHead(307, {"Content-Type": "text/plain"});
                         rep.end(authorize_url);
                       }
@@ -279,7 +279,7 @@ let server = http.createServer((req, rep) => {
                 }
               });
             } else {
-              log.info("User is not authorized by wechat");
+              log.info(`${mod}.${fun} ${JSON.stringify(arg)}: User(without token) is not authorized by wechat`);
               rep.writeHead(307, {"Content-Type": "text/plain"});
               rep.end(authorize_url);
             }
